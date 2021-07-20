@@ -1,0 +1,55 @@
+version: '3.7'
+
+services:
+  db:
+    image: postgres:12.0-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    ports:
+      - "54321:5432"
+    env_file:
+      - ./.env
+
+  mailer:
+      image: mailhog/mailhog
+      ports:
+        - "8086:8025"
+        - "1025:1025"
+
+  redis:
+      image: redis:6.0-alpine
+      volumes:
+        - redis:/data
+      env_file:
+        - ./.env
+      ports:
+        - "6379:6379"
+      command:
+        - 'redis-server'
+        - '--databases 2'
+        - '--save 900 1'
+        - '--save 300 10'
+        - '--save 60 10000'
+
+  redis-commander:
+      container_name: redis-commander
+      hostname: redis-commander
+      image: rediscommander/redis-commander:latest
+      restart: always
+      environment:
+      - REDIS_HOSTS=local:redis:6379
+      ports:
+      - "8081:8081"
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    env_file:
+      - ./.env
+    ports:
+      - "8085:15672"
+      - "5672:5672"
+
+
+volumes:
+  postgres_data:
+  redis:
