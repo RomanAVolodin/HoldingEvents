@@ -14,7 +14,6 @@ import { AuthMiddleware } from '@app/user/middlewares/auth.middleware';
     TypeOrmModule.forRoot(ormconfig),
     ConfigModule.forRoot({
       envFilePath: '../.env',
-      isGlobal: true,
     }),
     UserModule,
     NotificationModule,

@@ -203,7 +203,6 @@ export class UserService {
     )) as string;
     const user = await this.userRepository.getById(user_id);
 
-    console.log(user_id, user);
     if (!user_id || !user || user.email !== dto.email) {
       throw new HttpException('Token is not valid', HttpStatus.UNAUTHORIZED);
     }

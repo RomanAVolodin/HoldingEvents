@@ -8,11 +8,27 @@ import { HttpException, HttpStatus } from '@nestjs/common';
 import { UserStatusEnum } from '@app/user/types/user-status.enum';
 import { RegisterUserDto } from '@app/user/dto/registerUser.dto';
 import { ERole } from '@app/user/entity/role.enum';
+import { hash } from 'bcrypt';
+import { UserTokensDto } from '@app/user/dto/userTokens.dto';
+import { ConfigModule } from '@nestjs/config';
+import { v4 as uuidv4 } from 'uuid';
+import { log } from 'util';
+import { register } from 'tsconfig-paths';
 
-const registerUserDto: RegisterUserDto = {
-  email: 'email@ru.ru',
-  password: '123',
-  lastName: 'Ivanov',
+let registerUserDto: RegisterUserDto;
+const user: Omit<UserEntity, 'hashPassword'> = {
+  id: uuidv4(),
+  email: 'mail@mail.ru',
+  status: UserStatusEnum.Active,
+  profile: {
+    firstName: 'Roman',
+    lastName: '',
+    image: '',
+  },
+  role: ERole.User,
+  password: '$2a$10$hvqEVeB3rCBWzhILkTann.qDmGeO34PDkKuUVMRAUmdBShLG9A8AC', //123
+  created_at: new Date(),
+  updated_at: new Date(),
 };
 
 class UserRepositoryMock {
@@ -51,12 +67,23 @@ describe('UserService', () => {
         NotificationServiceProvider,
         CachingServiceProvider,
       ],
+      imports: [
+        ConfigModule.forRoot({
+          envFilePath: '../.env',
+        }),
+      ],
     }).compile();
 
     userService = module.get<UserService>(UserService);
     userRepository = module.get<UserRepository>(UserRepository);
     cachingService = module.get<CachingService>(CachingService);
     notificationService = module.get<NotificationService>(NotificationService);
+
+    registerUserDto = {
+      email: 'email@ru.ru',
+      password: '123',
+      lastName: 'Ivanov',
+    };
   });
 
   it('service should be defined', () => {
@@ -129,6 +156,174 @@ describe('UserService', () => {
       expect(user).toBeDefined();
       expect(user.role).toBe(ERole[user.role]);
       expect(user['password']).toBeUndefined();
+    });
+  });
+
+  describe('User logging in process', () => {
+    it('should throw exception - user does not exist', async () => {
+      userRepository.findByEmailForLogin = jest.fn();
+      try {
+        await userService.login(registerUserDto);
+      } catch (e) {
+        expect(e).toBeInstanceOf(HttpException);
+        expect(e.message).toBe('User doesnt exist');
+      }
+    });
+
+    it('should throw exception - рassword is not valid', async () => {
+      const hashedPassword = await hash(registerUserDto.password + '_test', 10);
+      userRepository.findByEmailForLogin = jest.fn().mockImplementation(() => {
+        return {
+          ...registerUserDto,
+          password: hashedPassword,
+        };
+      });
+
+      try {
+        await userService.login(registerUserDto);
+      } catch (e) {
+        expect(e).toBeInstanceOf(HttpException);
+        expect(e.message).toBe('Invalid password');
+      }
+    });
+
+    it('should throw exception - user is not activated yet', async () => {
+      const hashedPassword = await hash(registerUserDto.password, 10);
+      userRepository.findByEmailForLogin = jest.fn().mockImplementation(() => {
+        return {
+          ...registerUserDto,
+          password: hashedPassword,
+          status: UserStatusEnum.Pending,
+        };
+      });
+
+      try {
+        await userService.login(registerUserDto);
+      } catch (e) {
+        expect(e).toBeInstanceOf(HttpException);
+        expect(e.message).toBe('User was not activated yet');
+      }
+    });
+
+    it('should throw exception - user is disabled', async () => {
+      const hashedPassword = await hash(registerUserDto.password, 10);
+      userRepository.findByEmailForLogin = jest.fn().mockImplementation(() => {
+        return {
+          ...registerUserDto,
+          password: hashedPassword,
+          status: UserStatusEnum.Disabled,
+        };
+      });
+
+      try {
+        await userService.login(registerUserDto);
+      } catch (e) {
+        expect(e).toBeInstanceOf(HttpException);
+        expect(e.message).toBe('User is disabled at the moment');
+      }
+    });
+
+    it('should log user in', async () => {
+      const hashedPassword = await hash(registerUserDto.password, 10);
+      userRepository.findByEmailForLogin = jest.fn().mockImplementation(() => {
+        return {
+          ...registerUserDto,
+          password: hashedPassword,
+          status: UserStatusEnum.Active,
+        };
+      });
+
+      const tokens: UserTokensDto = await userService.login(registerUserDto);
+      expect(tokens).toBeDefined();
+      expect(tokens.accessToken).toBeDefined();
+      expect(tokens.refreshToken).toBeDefined();
+    });
+  });
+
+  describe('Confirm registration token', () => {
+    it('should throw exception if token is not valid', async () => {
+      cachingService.getUserByConfirmationToken = jest
+        .fn()
+        .mockImplementation(() => null);
+      userRepository.getById = jest.fn();
+      try {
+        await userService.confirmToken({ token: 'wrongtoken' });
+      } catch (e) {
+        expect(e).toBeInstanceOf(HttpException);
+        expect(e.message).toBe('Token is not valid');
+      }
+    });
+
+    it('should throw exception if user already activated', async () => {
+      cachingService.getUserByConfirmationToken = jest
+        .fn()
+        .mockImplementation(() => user.id);
+      userRepository.getById = jest.fn().mockImplementation(() => ({
+        ...user,
+        status: UserStatusEnum.Active,
+      }));
+
+      try {
+        await userService.confirmToken({ token: 'sometoken' });
+      } catch (e) {
+        expect(e).toBeInstanceOf(HttpException);
+        expect(e.message).toBe('User has been already activated');
+      }
+    });
+
+    it('should return tokens if all ok', async () => {
+      cachingService.getUserByConfirmationToken = jest
+        .fn()
+        .mockImplementation(() => user.id);
+      userRepository.getById = jest.fn().mockImplementation(() => ({
+        ...user,
+        status: UserStatusEnum.Pending,
+      }));
+
+      const tokens = await userService.confirmToken({ token: 'sometoken' });
+      expect(userRepository.save).toBeCalledTimes(1);
+      expect(tokens).toBeDefined();
+      expect(tokens.accessToken).toBeDefined();
+      expect(tokens.refreshToken).toBeDefined();
+    });
+  });
+
+  describe('Refresh tokens', () => {
+    it('should throw exception if no token provided', async () => {
+      try {
+        await userService.refreshTokens('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(HttpException);
+        expect(e.message).toBe('Token must be provided');
+      }
+    });
+
+    it('should generate new tokens if all is ok', async () => {
+      const hashedPassword = await hash(registerUserDto.password, 10);
+      userRepository.findByEmailForLogin = jest.fn().mockImplementation(() => {
+        return {
+          ...registerUserDto,
+          password: hashedPassword,
+          status: UserStatusEnum.Active,
+        };
+      });
+      userRepository.getById = jest
+        .fn()
+        .mockImplementation(() => registerUserDto);
+      const tokens: UserTokensDto = await userService.login(registerUserDto);
+      const newTokens = await userService.refreshTokens(tokens.refreshToken);
+      expect(newTokens).toBeDefined();
+      expect(newTokens.accessToken).toBeDefined();
+      expect(newTokens.refreshToken).toBeDefined();
+    });
+
+    it('should throw exception if token is not valid', async () => {
+      try {
+        await userService.refreshTokens('notvalidtoken');
+      } catch (e) {
+        expect(e).toBeInstanceOf(HttpException);
+        expect(e.message).toBe('jwt malformed');
+      }
     });
   });
 });

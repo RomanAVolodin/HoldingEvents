@@ -95,7 +95,10 @@
     "testEnvironment": "node",
     "moduleNameMapper": {
       "^@app(.*)$": "<rootDir>$1"
-    }
+    },
+    "setupFiles": [
+      "dotenv/config"
+    ]
   },
   "_moduleAliases": {
     "@app": "./dist"
